@@ -1974,6 +1974,15 @@
         muted = false;
       let want = false,
         grace = 0; // want = room should be playing; grace = ignore a not-playing player until then (loads/seeks take a moment)
+      const GRACE_MS = 8000; // how long we wait for a load/seek/autoplay before even nagging
+      const DRIFT_S = 1.5; // how far behind/ahead of the room we tolerate before jumping back in sync
+      // rc = the room clock {playing,time,at}. Everyone (host included) chases it, so one person's
+      // buffering never changes it. Only an explicit play/pause/seek by a user does.
+      let rc = null,
+        chaseAt = 0,
+        retryAt = 0;
+      const rcTime = () =>
+        rc ? rc.time + (rc.playing ? (Date.now() - rc.at) / 1000 : 0) : 0;
       let pendingYT = null,
         hostTimer = null,
         lastSent = { playing: null, time: 0, at: 0 };
@@ -2064,7 +2073,7 @@
         const a = S[cur];
         a.idx = i;
         a.pre = a.preOk = false;
-        grace = Date.now() + 3000;
+        grace = Date.now() + GRACE_MS;
         lock = { G: Q.starts[i] + local, until: Date.now() + 1500 };
         const o = { videoId: Q.ids[i], startSeconds: local };
         playing ? a.p.loadVideoById(o) : a.p.cueVideoById(o);
@@ -2074,7 +2083,7 @@
         const o = S[cur];
         cur = 1 - cur;
         const n = S[cur];
-        grace = Date.now() + 3000;
+        grace = Date.now() + GRACE_MS;
         n.el.classList.remove("hid");
         n.el.classList.add("top");
         applyAudio(n);
@@ -2091,7 +2100,7 @@
         return s === 1 || s === 3;
       };
       function setPlaying(pl) {
-        if (pl && !want) grace = Date.now() + 3000;
+        if (pl && !want) grace = Date.now() + GRACE_MS;
         want = pl;
         if (S[cur].p.getPlayerState)
           pl ? S[cur].p.playVideo() : S[cur].p.pauseVideo();
@@ -2114,7 +2123,7 @@
           l = G - Q.starts[i],
           a = S[cur],
           b = S[1 - cur];
-        grace = Date.now() + 3000;
+        grace = Date.now() + GRACE_MS;
         if (a.idx === i) {
           a.p.seekTo(l, true);
           lock = { G, until: Date.now() + 800 };
@@ -2264,6 +2273,7 @@
       }
       function sendYT(playing, t, hb = true) {
         lastSent = { playing, time: t, at: Date.now() };
+        if (!hb) rc = { playing, time: t, at: Date.now() };
         act("ytstate", { playing, time: t, hb })
           .then((r) => {
             $("syncInfo").textContent =
@@ -2277,21 +2287,12 @@
       }
       function startHostSync() {
         stopHostSync();
+        // Heartbeat every 3s with the ROOM time. If the host's own connection is slow, the host
+        // buffers and catches up like everyone else instead of dragging the room back.
         hostTimer = setInterval(() => {
-          if (!engineReady()) return;
-          const playing = isPlaying(),
-            t = getG();
-          const expected = lastSent.playing
-            ? lastSent.time + (Date.now() - lastSent.at) / 1000
-            : lastSent.time;
-          const jumped = Math.abs(t - expected) > 1.5;
-          if (
-            playing !== lastSent.playing ||
-            jumped ||
-            Date.now() - lastSent.at > 3000
-          )
-            sendYT(playing, t, !jumped);
-        }, 500);
+          if (!engineReady() || !rc) return;
+          sendYT(rc.playing, rcTime(), true);
+        }, 3000);
       }
       function stopHostSync() {
         clearInterval(hostTimer);
@@ -2301,7 +2302,7 @@
       // ---------- Controls: everyone gets play/pause; host also gets seek, volume, fullscreen ----------
       function toggleYT() {
         if (engineReady())
-          act("ytplay", { playing: !isPlaying(), time: getG() });
+          act("ytplay", { playing: !isPlaying(), time: rc ? rcTime() : getG() });
       }
       $("ytPlay").onclick =
         $("ytShield").onclick =
@@ -2328,7 +2329,7 @@
         seeking = false;
         if (!me || !me.host || !engineReady()) return;
         const t = +e.target.value,
-          pl = isPlaying();
+          pl = rc ? rc.playing : isPlaying();
         seekG(t, pl);
         sendYT(pl, t, false);
       });
@@ -2359,11 +2360,41 @@
           swap();
           S[cur].p.playVideo();
         }
-        // If the room should be playing but MY player isn't (autoplay blocked, stalled, etc.), pause it for EVERYONE.
-        if (want && !playing && Date.now() > grace) {
-          want = false;
-          act("ytplay", { playing: false, time: getG() });
+        // Follow the room clock. Buffering/loading only affects ME; nobody else is paused.
+        const st = a.p.getPlayerState ? a.p.getPlayerState() : -1,
+          now = Date.now();
+        if (rc && i >= 0) {
+          const target = rcTime();
+          if (rc.playing && target < Q.total - 1) {
+            if (st === 1) {
+              // playing again after a stall: jump to where everyone else is
+              if (Math.abs(target - getG()) > DRIFT_S && now > chaseAt) {
+                chaseAt = now + 3000;
+                seekG(target, true);
+              }
+            } else if (st !== 3 && now > grace && now > retryAt) {
+              // not playing and not buffering (autoplay blocked / still cued): keep trying, never pause the room
+              retryAt = now + 2000;
+              a.p.playVideo();
+            }
+          } else if (!rc.playing && st === 1) {
+            a.p.pauseVideo();
+          }
         }
+        let badge = $("bufBadge");
+        if (!badge) {
+          badge = document.createElement("div");
+          badge.id = "bufBadge";
+          badge.style.cssText =
+            "position:absolute;top:10px;left:10px;z-index:30;padding:4px 10px;border-radius:999px;background:rgba(0,0,0,.65);color:#fff;font-size:12px;pointer-events:none;display:none";
+          $("playerWrap").append(badge);
+        }
+        const stuck = !!rc && rc.playing && st !== 1 && st !== 3 && now > grace;
+        badge.textContent =
+          st === 3 && rc && rc.playing
+            ? "⏳ Buffering… you'll catch up automatically"
+            : "▶ Click the player to join in (browser blocked autoplay)";
+        badge.style.display = (st === 3 && rc && rc.playing) || stuck ? "block" : "none";
         if (me && me.host) {
           const G = getG();
           $("ytTime").textContent = fmt(G) + " / " + fmt(Q.total);
@@ -2422,6 +2453,7 @@
           );
           return;
         }
+        rc = { playing: st.playing, time: st.time, at: Date.now() };
         pendingYT = st;
         if (!engineReady()) return;
         syncTo(st);
