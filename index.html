@@ -2122,7 +2122,10 @@
         $("ytControls").hidden = !!me.host;
         $("ytControls").classList.toggle("viewer", !me.host);
         $("ytSeek").disabled = !me.host;
-        $("ytShield").hidden = !!me.host;
+        // Do not leave a click-shield over the Vidrift iframe.
+        // Vidrift requires a real click inside its own frame before it accepts
+        // play commands; the shield was swallowing that click for viewers.
+        $("ytShield").hidden = true;
         $("extLbl").textContent = "🎬 Vidrift sync: connected";
         banner("Synced controls enabled.");
         const roomClock = !me.host &&
