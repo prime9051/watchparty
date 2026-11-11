@@ -363,13 +363,13 @@
           <label>Your name</label
           ><input id="hName" placeholder="Name" maxlength="24" />
           <label
-            >YouTube video or playlist link (fully synced, plays as one movie)
-            or embed link / &lt;iframe&gt; code</label
+            >YouTube video or playlist link, Vidrift movie/TV/anime embed, or
+            another embed link / &lt;iframe&gt; code</label
           >
           <textarea
             id="hEmbed"
             rows="4"
-            placeholder="https://www.youtube.com/playlist?list=..."
+            placeholder="https://embed.vidrift.net/embed/movie/698687"
           ></textarea>
           <button id="createBtn">Create room</button>
           <div class="err" id="hErr"></div>
@@ -1479,6 +1479,13 @@
         font-size: 13px;
         font-weight: 700;
       }
+      #playerWrap.vidrift #ytMute,
+      #playerWrap.vidrift #ytVol {
+        display: none !important;
+      }
+      #playerWrap.vidrift #ytControls.viewer #ytFs {
+        display: none !important;
+      }
       #ytShield {
         position: absolute;
         inset: 0 0 46px 0;
@@ -1663,14 +1670,13 @@
           <h2>Host a room</h2>
           <label>Your name</label
           ><input id="hName" placeholder="Name" maxlength="24" />
-          <label
-            >YouTube video or playlist link (fully synced, plays as one movie)
-            or embed link / &lt;iframe&gt; code</label
-          >
+          <label>
+            YouTube link / playlist, embed link, or Vidrift TMDB Movie ID
+          </label>
           <textarea
             id="hEmbed"
-            rows="4"
-            placeholder="https://www.youtube.com/playlist?list=..."
+            rows="2"
+            placeholder="Enter TMDB ID (e.g. 698687) or paste a YouTube link"
           ></textarea>
           <button id="createBtn">Create room</button>
           <div class="err" id="hErr"></div>
@@ -1749,7 +1755,7 @@
           <div class="row">
             <input
               id="newUrl"
-              placeholder="Change video: paste new embed link / iframe code"
+              placeholder="Change video: Enter TMDB ID or paste a new video link"
               style="flex: 1; min-width: 220px"
             />
             <button class="ghost" id="urlBtn">Load for everyone</button>
@@ -1784,10 +1790,68 @@
         lastTime = null,
         lastTU = 0;
 
+      // Vidrift's documented cross-origin postMessage API.
+      let vidriftMode = false,
+        vidriftJoined = false,
+        vidriftState = null,
+        vidriftLocal = null,
+        vidriftLastPublish = 0,
+        vidriftChaseAt = 0,
+        vidriftSeeking = false;
+      let vidriftSubtitleOptions = [];
+      let vidriftSubtitleValue = "off";
+      let vidriftLastSubtitle = null;
+      const VIDRIFT_ORIGIN = "https://embed.vidrift.net";
+      const isVidrift = (u) => {
+        try {
+          const x = new URL(u);
+          return (
+            x.origin === VIDRIFT_ORIGIN &&
+            ["/embed/movie/", "/embed/tv/", "/embed/anilist/"].some((p) =>
+              x.pathname.startsWith(p),
+            )
+          );
+        } catch {
+          return false;
+        }
+      };
+      function vidriftUrl(u) {
+        const x = new URL(u);
+        const hide = new Set(
+          (x.searchParams.get("hide") || "").split(",").filter(Boolean),
+        );
+        [
+          "progress",
+          "volume",
+          "skip",
+          "time",
+          "title",
+          "server",
+          "next",
+          "episodes",
+          "subtitles",
+          "settings",
+          "pausecard",
+        ].forEach((v) => hide.add(v));
+        x.searchParams.set("hide", [...hide].join(","));
+        return x.href;
+      }
+
       const extractSrc = (s) => {
         const m = /src=["']([^"']+)["']/i.exec(s);
         return (m ? m[1] : s).trim();
       };
+      function resolveVideoInput(input) {
+        const value = extractSrc(input).trim();
+
+        // If only a TMDB ID is entered, generate Vidrift movie URL
+        if (/^\d+$/.test(value)) {
+          return `https://embed.vidrift.net/embed/movie/${value}`;
+        }
+
+        // Otherwise preserve existing YouTube and embed URL support
+        return value;
+      }
       const fmt = (t) => {
         t = Math.max(0, Math.floor(t));
         const h = Math.floor(t / 3600),
@@ -1826,7 +1890,7 @@
 
       $("createBtn").onclick = async () => {
         const name = $("hName").value.trim() || "Host";
-        const url = extractSrc($("hEmbed").value);
+        const url = resolveVideoInput($("hEmbed").value);
         $("hErr").textContent = "";
         let r;
         try {
@@ -1875,6 +1939,7 @@
           setPlayer(d.embedUrl, !!d.queue);
           if (d.queue) setQueue(d.queue.ids, d.queue.durs);
           if (d.yt) applyYT(d.yt);
+          if (d.vidrift) applyVidriftRoomState(d.vidrift);
           else if (d.player) showPlayer(d.player);
           else
             banner(
@@ -1918,6 +1983,12 @@
           setQueue(q.ids, q.durs);
         });
         es.addEventListener("ytstate", (e) => applyYT(JSON.parse(e.data)));
+        es.addEventListener("vstate", (e) => {
+          const st = JSON.parse(e.data);
+          const isOwnHostUpdate =
+            me && me.host && st.by === me.id && st.kind !== "toggle";
+          applyVidriftRoomState(st, !isOwnHostUpdate);
+        });
       }
       const esc = (s) =>
         s.replace(
@@ -1940,17 +2011,166 @@
         pendingYT = null;
         lastSync = null;
         extReady = false;
+        vidriftMode = isVidrift(url);
+        vidriftJoined = false;
+        vidriftState = null;
+        vidriftLocal = null;
+        $("playerWrap").classList.toggle("vidrift", vidriftMode);
         const pl = parsePL(url),
           v = pl ? null : parseYT(url);
         if (pl || v) {
+          unmountVidriftUi();
           $("player").src = "about:blank";
           showYtUi();
           if (me.host && !haveQueue) resolveQueue(v, pl);
           else if (!me.host) banner("");
         } else {
           unmountYT();
-          $("player").src = url;
+          $("player").hidden = false;
+          $("ytwrap").hidden = true;
+          $("ytShield").hidden = true;
+          $("ytControls").hidden = true;
+          $("cover").hidden = true;
+          if (vidriftMode) {
+            $("player").src = vidriftUrl(url);
+            $("extLbl").hidden = false;
+            $("extLbl").textContent =
+              "🎬 Vidrift sync: click once inside the player";
+            banner("Click once inside the video to enable synced controls.");
+          } else {
+            $("player").src = url;
+          }
         }
+        setExtPill();
+      }
+
+      function unmountVidriftUi() {
+        vidriftMode = false;
+        vidriftJoined = false;
+        vidriftState = null;
+        vidriftLocal = null;
+        $("playerWrap").classList.remove("vidrift");
+        $("ytShield").hidden = true;
+        $("ytControls").hidden = true;
+        $("extLbl").hidden = true;
+      }
+      function sendVidrift(message) {
+        const w = $("player").contentWindow;
+        if (w && vidriftMode) w.postMessage(message, VIDRIFT_ORIGIN);
+      }
+      function vidriftTime() {
+        if (!vidriftState) return 0;
+        return Math.max(
+          0,
+          vidriftState.time +
+            (vidriftState.playing ? (Date.now() - vidriftState.at) / 1000 : 0),
+        );
+      }
+      function applyVidriftRoomState(st, applyToPlayer = true) {
+        if (!vidriftMode || !st) return;
+        vidriftState = {
+          playing: !!st.playing,
+          time: Math.max(0, +st.time || 0),
+          duration:
+            +st.duration || (vidriftState && vidriftState.duration) || 0,
+          at: Date.now(),
+        };
+        if (!vidriftJoined || !applyToPlayer) return;
+        const target = vidriftTime();
+        sendVidrift({ type: "vidrift:resume", currentTime: target });
+        sendVidrift({ type: st.playing ? "vidrift:play" : "vidrift:pause" });
+      }
+      function joinVidriftControls() {
+        if (!vidriftMode || vidriftJoined) return;
+        vidriftJoined = true;
+        $("ytControls").hidden = false;
+        $("ytControls").classList.toggle("viewer", !me.host);
+        $("ytSeek").disabled = !me.host;
+        $("ytShield").hidden = false;
+        $("extLbl").textContent = "🎬 Vidrift sync: connected";
+        banner("Synced controls enabled.");
+        const roomClock = !me.host &&
+          vidriftState && {
+            playing: vidriftState.playing,
+            time: vidriftTime(),
+            duration: vidriftState.duration,
+          };
+        sendVidrift({ type: "vidrift:get-state" });
+        if (roomClock) applyVidriftRoomState(roomClock);
+      }
+      function publishVidriftState(playing, time, duration, kind) {
+        if (!me || !me.host || !vidriftMode) return;
+        const now = Date.now();
+        vidriftState = {
+          ...(vidriftState || {}),
+          playing,
+          time,
+          duration: duration || 0,
+          at: now,
+        };
+        vidriftLocal = { playing, time, duration: duration || 0, at: now };
+        vidriftLastPublish = now;
+        act("vstate", { playing, time, duration: duration || 0, kind });
+      }
+      function toggleVidrift() {
+        if (!vidriftMode) return;
+        if (!vidriftJoined) {
+          banner(
+            "Click once inside the video first; browser security requires it.",
+          );
+          return;
+        }
+        const playing = !(vidriftState && vidriftState.playing);
+        act("vplay", {
+          playing,
+          time: vidriftTime(),
+          duration: vidriftState?.duration || 0,
+        });
+      }
+      function updateVidriftCC() {
+        const btn = $("ytCC");
+
+        const available = vidriftSubtitleOptions.some((s) => s.value !== "off");
+
+        btn.disabled = !available;
+        btn.classList.toggle("off", vidriftSubtitleValue === "off");
+
+        btn.title = !available
+          ? "No subtitles available"
+          : vidriftSubtitleValue === "off"
+            ? "Turn subtitles on"
+            : "Turn subtitles off";
+      }
+
+      function toggleVidriftCC() {
+        if (!vidriftMode || !vidriftJoined) return;
+
+        const available = vidriftSubtitleOptions.filter(
+          (s) => s.value !== "off",
+        );
+
+        if (!available.length) {
+          banner("No subtitles available for this video.");
+          return;
+        }
+
+        let next;
+
+        if (vidriftSubtitleValue !== "off") {
+          vidriftLastSubtitle = vidriftSubtitleValue;
+          next = "off";
+        } else {
+          const previous = available.find(
+            (s) => s.value === vidriftLastSubtitle,
+          );
+
+          next = previous ? previous.value : available[0].value;
+        }
+
+        sendVidrift({
+          type: "vidrift:set",
+          subtitle: next,
+        });
       }
 
       // ---------- YouTube mode: a video or whole playlist as ONE continuous movie ----------
@@ -2078,8 +2298,14 @@
         } catch {}
       }
       $("ytCC").onclick = () => {
+        if (vidriftMode) {
+          toggleVidriftCC();
+          return;
+        }
+
         ccOn = !ccOn;
         $("ytCC").classList.toggle("off", !ccOn);
+
         if (engineReady()) applyCC(S[cur]);
       };
       function onState(s, st) {
@@ -2326,8 +2552,12 @@
       }
       // ---------- Controls: everyone gets play/pause; host also gets seek, volume, fullscreen ----------
       function toggleYT() {
+        if (vidriftMode) return toggleVidrift();
         if (engineReady())
-          act("ytplay", { playing: !isPlaying(), time: rc ? rcTime() : getG() });
+          act("ytplay", {
+            playing: !isPlaying(),
+            time: rc ? rcTime() : getG(),
+          });
       }
       $("ytPlay").onclick =
         $("ytShield").onclick =
@@ -2346,7 +2576,8 @@
       const fsEl = $("playerWrap");
       const fsOn = () =>
         fsEl.classList.contains("pfs") ||
-        (document.fullscreenElement || document.webkitFullscreenElement) === fsEl;
+        (document.fullscreenElement || document.webkitFullscreenElement) ===
+          fsEl;
       async function enterFs() {
         const req = fsEl.requestFullscreen || fsEl.webkitRequestFullscreen;
         if (req) {
@@ -2389,14 +2620,32 @@
         $("ytFs").textContent = fsOn() ? "✕" : "⛶";
       };
       let seeking = false;
-      $("ytSeek").addEventListener("pointerdown", () => (seeking = true));
-      $("ytSeek").addEventListener("pointerup", () => (seeking = false));
+      $("ytSeek").addEventListener("pointerdown", () => {
+        seeking = true;
+        if (vidriftMode) vidriftSeeking = true;
+      });
+      $("ytSeek").addEventListener("pointerup", () => {
+        seeking = false;
+        vidriftSeeking = false;
+      });
       $("ytSeek").addEventListener("change", (e) => {
         // host only (disabled for everyone else)
         seeking = false;
-        if (!me || !me.host || !engineReady()) return;
-        const t = +e.target.value,
-          pl = rc ? rc.playing : isPlaying();
+        if (!me || !me.host) return;
+        const t = +e.target.value;
+        if (vidriftMode) {
+          if (!vidriftJoined) return;
+          const playing = !!(vidriftState && vidriftState.playing);
+          sendVidrift({ type: "vidrift:resume", currentTime: t });
+          act("vseek", {
+            time: t,
+            playing,
+            duration: vidriftState?.duration || 0,
+          });
+          return;
+        }
+        if (!engineReady()) return;
+        const pl = rc ? rc.playing : isPlaying();
         seekG(t, pl);
         sendYT(pl, t, false);
       });
@@ -2461,7 +2710,8 @@
           st === 3 && rc && rc.playing
             ? "⏳ Buffering… you'll catch up automatically"
             : "▶ Click the player to join in (browser blocked autoplay)";
-        badge.style.display = (st === 3 && rc && rc.playing) || stuck ? "block" : "none";
+        badge.style.display =
+          (st === 3 && rc && rc.playing) || stuck ? "block" : "none";
         if (me && me.host) {
           const G = getG();
           $("ytTime").textContent = fmt(G) + " / " + fmt(Q.total);
@@ -2471,6 +2721,36 @@
         $("ytMute").textContent = muted ? "🔇" : "🔊";
         $("cover").hidden = !!(me && me.host) || playing; // viewers see a blank screen while paused (hides YouTube's title / suggestions)
       }, 100);
+
+      // ---------- Vidrift native sync clock ----------
+      setInterval(() => {
+        if (!vidriftMode || !vidriftState) return;
+        const target = vidriftTime();
+        const duration = vidriftState.duration || 0;
+        if (me && me.host) {
+          $("ytTime").textContent =
+            fmt(target) + (duration ? " / " + fmt(duration) : "");
+          $("ytSeek").max = duration || Math.max(1, target);
+          if (!vidriftSeeking && !seeking) $("ytSeek").value = target;
+        }
+        $("ytPlay").textContent = vidriftState.playing ? "⏸" : "▶";
+        const localNow = !vidriftLocal
+          ? null
+          : vidriftLocal.time +
+            (vidriftLocal.playing ? (Date.now() - vidriftLocal.at) / 1000 : 0);
+        if (
+          vidriftJoined &&
+          localNow != null &&
+          Date.now() > vidriftChaseAt &&
+          Math.abs(localNow - target) > 1.75
+        ) {
+          vidriftChaseAt = Date.now() + 2500;
+          sendVidrift({ type: "vidrift:resume", currentTime: target });
+          sendVidrift({
+            type: vidriftState.playing ? "vidrift:play" : "vidrift:pause",
+          });
+        }
+      }, 500);
 
       // ---------- Extension mode (non-YouTube embeds) ----------
       let extReady = false,
@@ -2484,7 +2764,7 @@
           );
       }
       function extPing() {
-        if (!me || isYT(embedUrl)) return;
+        if (!me || isYT(embedUrl) || vidriftMode) return;
         const w = $("player").contentWindow;
         if (w)
           w.postMessage({ wp: "down", type: "ping", host: !!me.host }, "*");
@@ -2492,6 +2772,13 @@
       }
       function setExtPill() {
         const p = $("extLbl");
+        if (vidriftMode) {
+          p.hidden = false;
+          p.textContent = vidriftJoined
+            ? "🎬 Vidrift sync: connected"
+            : "🎬 Vidrift sync: waiting for first click";
+          return;
+        }
         p.hidden = !me || !!isYT(embedUrl);
         p.textContent = extReady
           ? "🧩 Sync extension: connected"
@@ -2500,7 +2787,19 @@
       setInterval(extPing, 2000);
       $("player").addEventListener("load", () => {
         extReady = false;
-        setTimeout(extPing, 500);
+        if (vidriftMode) {
+          setTimeout(() => {
+            sendVidrift({ type: "vidrift:get-state" });
+            if (vidriftState && vidriftJoined)
+              applyVidriftRoomState(vidriftState);
+          }, 250);
+          $("extLbl").hidden = false;
+          $("extLbl").textContent = vidriftJoined
+            ? "🎬 Vidrift sync: connected"
+            : "🎬 Vidrift sync: waiting for first click";
+        } else {
+          setTimeout(extPing, 500);
+        }
       });
 
       function applyYT(st) {
@@ -2600,7 +2899,7 @@
         act("callout", { kind: "time", time: t });
       };
       $("urlBtn").onclick = async () => {
-        const u = extractSrc($("newUrl").value);
+        const u = resolveVideoInput($("newUrl").value);
         if (!u) return;
         const r = await act("seturl", { url: u });
         if (r.error) alert(r.error);
@@ -2613,6 +2912,60 @@
       window.addEventListener("message", (e) => {
         if (e.source !== $("player").contentWindow) return;
         const x = e.data;
+        if (
+          vidriftMode &&
+          e.origin === VIDRIFT_ORIGIN &&
+          x &&
+          typeof x.type === "string"
+        ) {
+          if (x.type === "vidrift:paused" || x.type === "vidrift:unpaused") {
+            joinVidriftControls();
+            const playing = x.type === "vidrift:unpaused";
+            const time = Math.max(0, +x.currentTime || 0);
+            const duration = vidriftState?.duration || 0;
+            vidriftLocal = { playing, time, duration, at: Date.now() };
+            if (me && me.host)
+              publishVidriftState(
+                playing,
+                time,
+                duration,
+                playing ? "unpaused" : "paused",
+              );
+          } else if (x.type === "vidrift:progress") {
+            const time = Math.max(0, +x.currentTime || 0);
+            const duration = Math.max(0, +x.duration || 0);
+            vidriftLocal = { playing: true, time, duration, at: Date.now() };
+            if (me && me.host && Date.now() - vidriftLastPublish >= 4500)
+              publishVidriftState(true, time, duration, "progress");
+          } else if (x.type === "vidrift:state") {
+            vidriftSubtitleOptions = Array.isArray(x.subtitles)
+              ? x.subtitles
+              : [];
+
+            vidriftSubtitleValue = x.subtitle || "off";
+
+            if (vidriftSubtitleValue !== "off") {
+              vidriftLastSubtitle = vidriftSubtitleValue;
+            }
+
+            updateVidriftCC();
+            const playing = !x.paused;
+            const time = Math.max(0, +x.currentTime || 0);
+            const duration = Math.max(0, +x.duration || 0);
+            vidriftLocal = { playing, time, duration, at: Date.now() };
+            $("ytSeek").max = duration || 1;
+            if (me && me.host && !vidriftLastPublish)
+              publishVidriftState(playing, time, duration, "initial");
+          } else if (x.type === "vidrift:command-error") {
+            if (x.reason === "click-required")
+              banner(
+                "Click once inside the video before using synced controls.",
+              );
+            else
+              banner("Vidrift command issue: " + String(x.reason || "unknown"));
+          }
+          return;
+        }
         if (x && x.wp === "up") {
           // messages from the Watchparty Sync extension
           if (x.type === "ready") {
