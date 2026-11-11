@@ -2066,8 +2066,10 @@
             (vidriftState.playing ? (Date.now() - vidriftState.at) / 1000 : 0),
         );
       }
+
       function applyVidriftRoomState(st, applyToPlayer = true) {
         if (!vidriftMode || !st) return;
+
         vidriftState = {
           playing: !!st.playing,
           time: Math.max(0, +st.time || 0),
@@ -2075,11 +2077,31 @@
             +st.duration || (vidriftState && vidriftState.duration) || 0,
           at: Date.now(),
         };
+
         if (!vidriftJoined || !applyToPlayer) return;
+
+        const kind = st.kind || "join";
         const target = vidriftTime();
-        sendVidrift({ type: "vidrift:resume", currentTime: target });
-        sendVidrift({ type: st.playing ? "vidrift:play" : "vidrift:pause" });
+
+        // Progress updates only update the room clock.
+        // Never seek the actual video on every heartbeat.
+        if (kind === "progress" || kind === "state") return;
+
+        // Seek only when joining, receiving an initial state,
+        // or when the host explicitly changes the timestamp.
+        if (["join", "initial", "seek"].includes(kind)) {
+          sendVidrift({
+            type: "vidrift:resume",
+            currentTime: target,
+          });
+        }
+
+        // Apply actual playback state.
+        sendVidrift({
+          type: vidriftState.playing ? "vidrift:play" : "vidrift:pause",
+        });
       }
+
       function joinVidriftControls() {
         if (!vidriftMode || vidriftJoined) return;
         vidriftJoined = true;
@@ -2094,6 +2116,7 @@
             playing: vidriftState.playing,
             time: vidriftTime(),
             duration: vidriftState.duration,
+            kind: "join",
           };
         sendVidrift({ type: "vidrift:get-state" });
         if (roomClock) applyVidriftRoomState(roomClock);
@@ -2738,17 +2761,29 @@
           ? null
           : vidriftLocal.time +
             (vidriftLocal.playing ? (Date.now() - vidriftLocal.at) / 1000 : 0);
-        if (
-          vidriftJoined &&
-          localNow != null &&
-          Date.now() > vidriftChaseAt &&
-          Math.abs(localNow - target) > 1.75
-        ) {
-          vidriftChaseAt = Date.now() + 2500;
-          sendVidrift({ type: "vidrift:resume", currentTime: target });
-          sendVidrift({
-            type: vidriftState.playing ? "vidrift:play" : "vidrift:pause",
-          });
+        if (vidriftJoined && localNow != null && Date.now() > vidriftChaseAt) {
+          const now = Date.now();
+          const localPlaying = !!vidriftLocal.playing;
+          const roomPlaying = !!vidriftState.playing;
+
+          // Correct play/pause mismatches immediately.
+          if (localPlaying !== roomPlaying) {
+            vidriftChaseAt = now + 4000;
+
+            sendVidrift({
+              type: roomPlaying ? "vidrift:play" : "vidrift:pause",
+            });
+          }
+
+          // Seek only when there is significant time drift.
+          else if (roomPlaying && Math.abs(localNow - target) > 5) {
+            vidriftChaseAt = now + 8000;
+
+            sendVidrift({
+              type: "vidrift:resume",
+              currentTime: target,
+            });
+          }
         }
       }, 500);
 
