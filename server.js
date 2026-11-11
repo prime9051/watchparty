@@ -302,6 +302,8 @@ const server = http.createServer(async (req, res) => {
         case "vstate":
         case "vseek": {
           // Host state updates and seeking
+          const lt = room.lastVidriftToggle;
+          if ((b.kind === "progress" || b.kind === "state") && lt && Date.now() - lt.at < 2500 && !!b.playing !== lt.playing) break;
           const time = Math.max(0, Number(b.time) || 0);
 
           room.vidrift = {
