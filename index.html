@@ -407,12 +407,39 @@
         border-radius: 6px;
         margin: 6px 0 0;
       }
-    
+
       /* VidRift mode: native iframe controls only + our own small CC pill */
-      #playerWrap.vidrift #ytShield, #playerWrap.vidrift #cover { display: none !important; }
-      #playerWrap.vidrift #ytControls { position: absolute; top: 10px; right: 10px; left: auto; bottom: auto; width: auto; padding: 0; background: none; opacity: 1 !important; transform: none; pointer-events: none; z-index: 6; }
-      #playerWrap.vidrift #ytControls > *:not(#ytCC) { display: none !important; }
-      #playerWrap.vidrift #ytCC { pointer-events: auto; background: rgba(0,0,0,.65); color: #fff; border: 0; border-radius: 14px; padding: 4px 11px; font-size: 13px; font-weight: 700; }
+      #playerWrap.vidrift #ytShield,
+      #playerWrap.vidrift #cover {
+        display: none !important;
+      }
+      #playerWrap.vidrift #ytControls {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        left: auto;
+        bottom: auto;
+        width: auto;
+        padding: 0;
+        background: none;
+        opacity: 1 !important;
+        transform: none;
+        pointer-events: none;
+        z-index: 6;
+      }
+      #playerWrap.vidrift #ytControls > *:not(#ytCC) {
+        display: none !important;
+      }
+      #playerWrap.vidrift #ytCC {
+        pointer-events: auto;
+        background: rgba(0, 0, 0, 0.65);
+        color: #fff;
+        border: 0;
+        border-radius: 14px;
+        padding: 4px 11px;
+        font-size: 13px;
+        font-weight: 700;
+      }
     </style>
   </head>
   <body>
@@ -542,9 +569,24 @@
               style="flex: 1; min-width: 220px"
             />
             <span id="newSeries" class="row" hidden style="flex: 1">
-              <input id="newTv" inputmode="numeric" placeholder="TMDB ID" style="flex: 2; min-width: 90px" />
-              <input id="newS" inputmode="numeric" placeholder="Season" style="flex: 1; min-width: 70px" />
-              <input id="newE" inputmode="numeric" placeholder="Episode" style="flex: 1; min-width: 70px" />
+              <input
+                id="newTv"
+                inputmode="numeric"
+                placeholder="TMDB ID"
+                style="flex: 2; min-width: 90px"
+              />
+              <input
+                id="newS"
+                inputmode="numeric"
+                placeholder="Season"
+                style="flex: 1; min-width: 70px"
+              />
+              <input
+                id="newE"
+                inputmode="numeric"
+                placeholder="Episode"
+                style="flex: 1; min-width: 70px"
+              />
             </span>
             <button class="ghost" id="urlBtn">Load for everyone</button>
             <button class="ghost" id="nextEpBtn" hidden>⏭ Next episode</button>
@@ -588,7 +630,8 @@
         vidriftChaseAt = 0,
         vidriftSeeking = false;
       let vidriftSubtitleOptions = [];
-      let vidriftJoinAt = 0, vidriftPollN = 0;
+      let vidriftJoinAt = 0,
+        vidriftPollN = 0;
       let vidriftSubtitleValue = "off";
       let vidriftLastSubtitle = null;
       const VIDRIFT_ORIGIN = "https://embed.vidrift.net";
@@ -610,10 +653,34 @@
         const hidden = new Set(
           (x.searchParams.get("hide") || "").split(",").filter(Boolean),
         );
-        ["progress", "volume", "skip", "time", "subtitles", "settings", "title", "server", "next", "episodes", "pausecard", "play"].forEach((v) => hidden.delete(v));
+        [
+          "progress",
+          "volume",
+          "skip",
+          "time",
+          "subtitles",
+          "settings",
+          "title",
+          "server",
+          "next",
+          "episodes",
+          "pausecard",
+          "play",
+        ].forEach((v) => hidden.delete(v));
         // Viewers: native play/pause, volume and fullscreen only. No seek bar, skip buttons, time, title or episode info.
         if (!isHost)
-          ["progress", "skip", "time", "subtitles", "settings", "title", "server", "next", "episodes", "pausecard"].forEach((v) => hidden.add(v));
+          [
+            "progress",
+            "skip",
+            "time",
+            "subtitles",
+            "settings",
+            "title",
+            "server",
+            "next",
+            "episodes",
+            "pausecard",
+          ].forEach((v) => hidden.add(v));
 
         if (hidden.size) x.searchParams.set("hide", [...hidden].join(","));
         else x.searchParams.delete("hide");
@@ -755,7 +822,20 @@
           addMsg(m.name, m.text, m.host);
         });
         es.addEventListener("seturl", (e) => {
-          setPlayer(JSON.parse(e.data).url);
+          const u = JSON.parse(e.data).url;
+          const prevEp = seriesInfo(embedUrl),
+            nextEp = seriesInfo(u),
+            same = u === embedUrl;
+          setPlayer(u);
+          // Host already moved to this episode inside its own player: nothing to reload.
+          if (me && me.host && same) return;
+          if (prevEp && nextEp && prevEp.id === nextEp.id) {
+            sys(`Host moved to S${nextEp.s} E${nextEp.e}.`);
+            banner(
+              `Host moved to <b>S${nextEp.s} E${nextEp.e}</b>. Click once inside the video to re-sync, then wait for the host.`,
+            );
+            return;
+          }
           sys("Host loaded a new video.");
           banner("New video loaded. Wait for the host's countdown.");
         });
@@ -825,7 +905,9 @@
           $("ytShield").hidden = true;
           $("ytControls").hidden = true;
           $("cover").hidden = true;
-          if (vidriftMode) { $("ytControls").hidden = false; $("player").src = vidriftUrl(url, !!me.host);
+          if (vidriftMode) {
+            $("ytControls").hidden = false;
+            $("player").src = vidriftUrl(url, !!me.host);
             $("extLbl").hidden = false;
             $("extLbl").textContent =
               "🎬 Vidrift sync: click once inside the player";
@@ -965,7 +1047,12 @@
       }
 
       function toggleVidriftCC() {
-        if (!vidriftMode) return; if (!vidriftJoined) { banner("Click once inside the video first, then use CC."); return; } const available = vidriftSubtitleOptions.filter(
+        if (!vidriftMode) return;
+        if (!vidriftJoined) {
+          banner("Click once inside the video first, then use CC.");
+          return;
+        }
+        const available = vidriftSubtitleOptions.filter(
           (s) => s.value !== "off",
         );
 
@@ -994,9 +1081,16 @@
       }
 
       // A real click inside the iframe makes it take focus -> window blur. That click unlocks sync commands.
-      window.addEventListener("blur", () => setTimeout(() => {
-        if (vidriftMode && !vidriftJoined && document.activeElement === $("player")) joinVidriftControls();
-      }, 0));
+      window.addEventListener("blur", () =>
+        setTimeout(() => {
+          if (
+            vidriftMode &&
+            !vidriftJoined &&
+            document.activeElement === $("player")
+          )
+            joinVidriftControls();
+        }, 0),
+      );
 
       // ---------- YouTube mode: a video or whole playlist as ONE continuous movie ----------
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1550,7 +1644,8 @@
       // ---------- Vidrift native sync clock ----------
       setInterval(() => {
         if (!vidriftMode || !vidriftState) return;
-        if (me && me.host && vidriftJoined && ++vidriftPollN % 2 === 0) sendVidrift({ type: "vidrift:get-state" });   // host: fresh time every second (detects native seeks)
+        if (me && me.host && vidriftJoined && ++vidriftPollN % 2 === 0)
+          sendVidrift({ type: "vidrift:get-state" }); // host: fresh time every second (detects native seeks)
         const target = vidriftTime();
         const duration = vidriftState.duration || 0;
         if (me && me.host) {
@@ -1626,7 +1721,12 @@
       $("player").addEventListener("load", () => {
         extReady = false;
         if (vidriftMode) {
+          // Viewers never move on by themselves (Up Next / Next); they follow the host's episode.
+          if (me && !me.host)
+            sendVidrift({ type: "vidrift:nextup-info", next: null });
           setTimeout(() => {
+            if (me && !me.host)
+              sendVidrift({ type: "vidrift:nextup-info", next: null });
             sendVidrift({ type: "vidrift:get-state" });
             if (vidriftState && vidriftJoined)
               applyVidriftRoomState(vidriftState);
@@ -1785,7 +1885,21 @@
         $("newE").value = i.e + 1;
         $("urlBtn").click();
       };
-
+      // ---------- Player-driven episode changes (host only) ----------
+      function hostEpisodeChanged(sn, en) {
+        if (!me || !me.host) return;
+        const i = seriesInfo(embedUrl);
+        if (!i || (i.s === sn && i.e === en)) return;
+        const url = seriesUrl(i.id, sn, en);
+        if (!url) return;
+        // Update locally FIRST so our own iframe is not reloaded by the echo of this change.
+        embedUrl = url;
+        vidriftState = null;
+        vidriftLocal = null;
+        vidriftLastPublish = 0;
+        act("seturl", { url });
+        sys(`You moved to S${sn} E${en}.`);
+      }
       // ---------- Best-effort player API bridge ----------
       // If the embed posts events to the parent window, the host's page relays them to everyone.
       const dbg = [];
@@ -1798,7 +1912,16 @@
           x &&
           typeof x.type === "string"
         ) {
-          if (x.type === "vidrift:paused" || x.type === "vidrift:unpaused") { const wasJoined = vidriftJoined; joinVidriftControls();
+          if (x.type === "vidrift:episode" && me && me.host) {
+            const sn = +x.season,
+              en = +x.episode,
+              i = seriesInfo(embedUrl);
+            if (i && String(x.tmdbId) === String(i.id) && sn > 0 && en > 0)
+              hostEpisodeChanged(sn, en);
+          }
+          if (x.type === "vidrift:paused" || x.type === "vidrift:unpaused") {
+            const wasJoined = vidriftJoined;
+            joinVidriftControls();
             const playing = x.type === "vidrift:unpaused";
             const time = Math.max(0, +x.currentTime || 0);
             const duration = vidriftState?.duration || 0;
@@ -1806,9 +1929,17 @@
             const roomPlaying = !!(vidriftState && vidriftState.playing);
             // Our own play/pause commands match the room state, so only a real user action differs -> share it.
             // A viewer's first click (the "join" click) must not start/stop the room.
-            const settling = !(me && me.host) && (!wasJoined || Date.now() - vidriftJoinAt < 1500);
+            const settling =
+              !(me && me.host) &&
+              (!wasJoined || Date.now() - vidriftJoinAt < 1500);
             if (me && playing !== roomPlaying && !settling) {
-              if (me.host) publishVidriftState(playing, time, duration, playing ? "unpaused" : "paused");
+              if (me.host)
+                publishVidriftState(
+                  playing,
+                  time,
+                  duration,
+                  playing ? "unpaused" : "paused",
+                );
               else {
                 vidriftState = { playing, time, duration, at: Date.now() };
                 act("vplay", { playing, time, duration });
@@ -1818,7 +1949,12 @@
             const time = Math.max(0, +x.currentTime || 0);
             const duration = Math.max(0, +x.duration || 0);
             vidriftLocal = { playing: true, time, duration, at: Date.now() };
-            if (me && me.host && vidriftState?.playing && Date.now() - vidriftLastPublish >= 4500)
+            if (
+              me &&
+              me.host &&
+              vidriftState?.playing &&
+              Date.now() - vidriftLastPublish >= 4500
+            )
               publishVidriftState(true, time, duration, "progress");
           } else if (x.type === "vidrift:state") {
             vidriftSubtitleOptions = Array.isArray(x.subtitles)
@@ -1836,12 +1972,19 @@
             const time = Math.max(0, +x.currentTime || 0);
             const duration = Math.max(0, +x.duration || 0);
             const prev = vidriftLocal;
-            const est = prev ? prev.time + (prev.playing ? (Date.now() - prev.at) / 1000 : 0) : null;
+            const est = prev
+              ? prev.time + (prev.playing ? (Date.now() - prev.at) / 1000 : 0)
+              : null;
             vidriftLocal = { playing, time, duration, at: Date.now() };
             $("ytSeek").max = duration || 1;
             if (me && me.host) {
-              if (!vidriftLastPublish) publishVidriftState(playing, time, duration, "initial");
-              else if (vidriftJoined && est != null && Math.abs(time - est) > 2.5)
+              if (!vidriftLastPublish)
+                publishVidriftState(playing, time, duration, "initial");
+              else if (
+                vidriftJoined &&
+                est != null &&
+                Math.abs(time - est) > 2.5
+              )
                 publishVidriftState(playing, time, duration, "seek");
             }
           } else if (x.type === "vidrift:command-error") {
