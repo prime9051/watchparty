@@ -57,6 +57,25 @@
       [hidden] {
         display: none !important;
       }
+      select {
+        font: inherit;
+        color: var(--text);
+        background: #0e0f13;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 10px;
+      }
+      .srow {
+        display: flex;
+        gap: 8px;
+      }
+      .srow > div {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        min-width: 0;
+      }
       #home {
         max-width: 820px;
         margin: 8vh auto;
@@ -407,14 +426,37 @@
           <h2>Host a room</h2>
           <label>Your name</label
           ><input id="hName" placeholder="Name" maxlength="24" />
-          <label>
-            YouTube link / playlist, embed link, or Vidrift TMDB Movie ID
-          </label>
-          <textarea
-            id="hEmbed"
-            rows="2"
-            placeholder="Enter TMDB ID (e.g. 698687) or paste a YouTube link"
-          ></textarea>
+          <label>What are you watching?</label>
+          <select id="hMode">
+            <option value="movie">🎬 Movie / YouTube / link</option>
+            <option value="series">📺 Series (TV show)</option>
+          </select>
+          <div id="hMovieBox" style="display: contents">
+            <label>
+              YouTube link / playlist, embed link, or Vidrift TMDB Movie ID
+            </label>
+            <textarea
+              id="hEmbed"
+              rows="2"
+              placeholder="Enter TMDB ID (e.g. 698687) or paste a YouTube link"
+            ></textarea>
+          </div>
+          <div id="hSeriesBox" hidden>
+            <div class="srow">
+              <div>
+                <label>TMDB ID</label>
+                <input id="hTvId" inputmode="numeric" placeholder="e.g. 1396" />
+              </div>
+              <div>
+                <label>Season</label>
+                <input id="hTvS" inputmode="numeric" placeholder="1" />
+              </div>
+              <div>
+                <label>Episode</label>
+                <input id="hTvE" inputmode="numeric" placeholder="1" />
+              </div>
+            </div>
+          </div>
           <button id="createBtn">Create room</button>
           <div class="err" id="hErr"></div>
         </div>
@@ -490,12 +532,22 @@
             <button class="ghost" id="timeBtn">🕒 Time check</button>
           </div>
           <div class="row">
+            <select id="newMode">
+              <option value="movie">🎬 Movie / link</option>
+              <option value="series">📺 Series</option>
+            </select>
             <input
               id="newUrl"
               placeholder="Change video: Enter TMDB ID or paste a new video link"
               style="flex: 1; min-width: 220px"
             />
+            <span id="newSeries" class="row" hidden style="flex: 1">
+              <input id="newTv" inputmode="numeric" placeholder="TMDB ID" style="flex: 2; min-width: 90px" />
+              <input id="newS" inputmode="numeric" placeholder="Season" style="flex: 1; min-width: 70px" />
+              <input id="newE" inputmode="numeric" placeholder="Episode" style="flex: 1; min-width: 70px" />
+            </span>
             <button class="ghost" id="urlBtn">Load for everyone</button>
+            <button class="ghost" id="nextEpBtn" hidden>⏭ Next episode</button>
           </div>
           <div id="syncInfo" style="font-size: 12px; color: var(--dim)"></div>
           <details>
@@ -583,6 +635,13 @@
         // Otherwise preserve existing YouTube and embed URL support
         return value;
       }
+      // Series: https://embed.vidrift.net/embed/tv/TMDBID/SEASON/EPISODE
+      function seriesUrl(id, season, episode) {
+        const ok = (v) => /^\d+$/.test(String(v).trim()) && +v > 0;
+        if (!ok(id) || !ok(season) || !ok(episode)) return null;
+        return `${VIDRIFT_ORIGIN}/embed/tv/${+id}/${+season}/${+episode}`;
+      }
+      const SERIES_ERR = "Enter a numeric TMDB ID, season and episode number.";
       const fmt = (t) => {
         t = Math.max(0, Math.floor(t));
         const h = Math.floor(t / 3600),
@@ -621,8 +680,12 @@
 
       $("createBtn").onclick = async () => {
         const name = $("hName").value.trim() || "Host";
-        const url = resolveVideoInput($("hEmbed").value);
         $("hErr").textContent = "";
+        let url;
+        if ($("hMode").value === "series") {
+          url = seriesUrl($("hTvId").value, $("hTvS").value, $("hTvE").value);
+          if (!url) return ($("hErr").textContent = SERIES_ERR);
+        } else url = resolveVideoInput($("hEmbed").value);
         let r;
         try {
           r = await api("/api/rooms", { embedUrl: url });
@@ -1673,12 +1736,54 @@
         }
         act("callout", { kind: "time", time: t });
       };
+      const toggleHostMode = () => {
+        const tv = $("hMode").value === "series";
+        $("hSeriesBox").hidden = !tv;
+        $("hMovieBox").hidden = tv;
+      };
+      $("hMode").onchange = toggleHostMode;
+      const toggleNewMode = () => {
+        const tv = $("newMode").value === "series";
+        $("newSeries").hidden = !tv;
+        $("newUrl").hidden = tv;
+      };
+      $("newMode").onchange = toggleNewMode;
+      const SERIES_RE = /^\/embed\/tv\/(\d+)\/(\d+)\/(\d+)/;
+      const seriesInfo = (u) => {
+        try {
+          const x = new URL(u);
+          const m = x.origin === VIDRIFT_ORIGIN && SERIES_RE.exec(x.pathname);
+          return m ? { id: +m[1], s: +m[2], e: +m[3] } : null;
+        } catch {
+          return null;
+        }
+      };
+      const refreshNextBtn = () => {
+        $("nextEpBtn").hidden = !seriesInfo(embedUrl);
+      };
+      setInterval(refreshNextBtn, 1000);
       $("urlBtn").onclick = async () => {
-        const u = resolveVideoInput($("newUrl").value);
-        if (!u) return;
+        let u;
+        if ($("newMode").value === "series") {
+          u = seriesUrl($("newTv").value, $("newS").value, $("newE").value);
+          if (!u) return alert(SERIES_ERR);
+        } else {
+          u = resolveVideoInput($("newUrl").value);
+          if (!u) return;
+        }
         const r = await act("seturl", { url: u });
         if (r.error) alert(r.error);
         else $("newUrl").value = "";
+      };
+      $("nextEpBtn").onclick = async () => {
+        const i = seriesInfo(embedUrl);
+        if (!i) return;
+        $("newMode").value = "series";
+        toggleNewMode();
+        $("newTv").value = i.id;
+        $("newS").value = i.s;
+        $("newE").value = i.e + 1;
+        $("urlBtn").click();
       };
 
       // ---------- Best-effort player API bridge ----------
